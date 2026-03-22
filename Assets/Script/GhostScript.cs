@@ -1,319 +1,415 @@
 using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.UI;
 
-namespace Sample {
-public class GhostScript : MonoBehaviour
+namespace Sample
 {
-    private Animator Anim;
-    private CharacterController Ctrl;
-    private Vector3 MoveDirection = Vector3.zero;
-    // Cache hash values
-    private static readonly int IdleState = Animator.StringToHash("Base Layer.idle");
-    private static readonly int MoveState = Animator.StringToHash("Base Layer.move");
-    private static readonly int SurprisedState = Animator.StringToHash("Base Layer.surprised");
-    private static readonly int AttackState = Animator.StringToHash("Base Layer.attack_shift");
-    private static readonly int DissolveState = Animator.StringToHash("Base Layer.dissolve");
-    private static readonly int AttackTag = Animator.StringToHash("Attack");
-    // dissolve
-    [SerializeField] private SkinnedMeshRenderer[] MeshR;
-    private float Dissolve_value = 1;
-    private bool DissolveFlg = false;
-    private const int maxHP = 3;
-    private int HP = maxHP;
-    private Text HP_text;
-
-    // moving speed
-    [SerializeField] private float Speed = 4;
-
-    void Start()
+    [RequireComponent(typeof(Animator))]
+    [RequireComponent(typeof(CharacterController))]
+    public class GhostScript : MonoBehaviour, IDamageable
     {
-        Anim = this.GetComponent<Animator>();
-        Ctrl = this.GetComponent<CharacterController>();
-        HP_text = GameObject.Find("Canvas/HP").GetComponent<Text>();
-        HP_text.text = "HP " + HP.ToString();
-    }
+        private static readonly int IdleState = Animator.StringToHash("Base Layer.idle");
+        private static readonly int MoveState = Animator.StringToHash("Base Layer.move");
+        private static readonly int SurprisedState = Animator.StringToHash("Base Layer.surprised");
+        private static readonly int AttackState = Animator.StringToHash("Base Layer.attack_shift");
+        private static readonly int DissolveState = Animator.StringToHash("Base Layer.dissolve");
 
-    void Update()
-    {
-        STATUS();
-        GRAVITY();
-        Respawn();
-        // this character status
-        if(!PlayerStatus.ContainsValue( true ))
+        [Header("References")]
+        [SerializeField] private Transform PlayerTarget;
+        [SerializeField] private string PlayerTag = "Player";
+        [SerializeField] private SkinnedMeshRenderer[] MeshR;
+
+        [Header("Movement")]
+        [SerializeField] private float Speed = 4f;
+        [SerializeField] private float WanderRadius = 8f;
+        [SerializeField] private float WanderPauseMin = 0.75f;
+        [SerializeField] private float WanderPauseMax = 2f;
+        [SerializeField] private float RotationSpeed = 8f;
+        [SerializeField] private float Gravity = -20f;
+
+        [Header("Combat")]
+        [SerializeField] private float DetectRange = 12f;
+        [SerializeField] private float AttackRange = 1.75f;
+        [SerializeField] private float AttackCooldown = 1.2f;
+        [SerializeField] private float AttackWindup = 0.35f;
+        [SerializeField] private float HitStunDuration = 0.35f;
+        [SerializeField] private int AttackDamage = 15;
+        [SerializeField] private int MaxHP = 3;
+        [SerializeField] private float RespawnDelay = 3f;
+
+        private Animator Anim;
+        private CharacterController Ctrl;
+        private Vector3 SpawnPosition;
+        private Quaternion SpawnRotation;
+        private Vector3 CurrentDestination;
+        private float VerticalVelocity;
+        private float NextWanderDecisionTime;
+        private float AttackCooldownTimer;
+        private float HitStunTimer;
+        private float RespawnTimer;
+        private float Dissolve_value = 1f;
+        private int HP;
+        private bool DissolveFlg;
+        private bool HasDestination;
+        private Coroutine AttackRoutineHandle;
+
+        private void Awake()
         {
-            MOVE();
-            PlayerAttack();
-            Damage();
-        }
-        else if(PlayerStatus.ContainsValue( true ))
-        {
-            int status_name = 0;
-            foreach(var i in PlayerStatus)
+            Anim = GetComponent<Animator>();
+            Ctrl = GetComponent<CharacterController>();
+            SpawnPosition = transform.position;
+            SpawnRotation = transform.rotation;
+            HP = MaxHP;
+
+            if (MeshR == null || MeshR.Length == 0)
             {
-                if(i.Value == true)
+                MeshR = GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            }
+        }
+
+        private void Start()
+        {
+            ResolvePlayerTarget();
+            ResetDissolve();
+            CrossFadeState(IdleState);
+        }
+
+        private void Update()
+        {
+            ResolvePlayerTarget();
+
+            if (AttackCooldownTimer > 0f)
+            {
+                AttackCooldownTimer -= Time.deltaTime;
+            }
+
+            if (HitStunTimer > 0f)
+            {
+                HitStunTimer -= Time.deltaTime;
+            }
+
+            if (DissolveFlg)
+            {
+                UpdateDissolveAndRespawn();
+                return;
+            }
+
+            Vector3 horizontalVelocity = Vector3.zero;
+
+            if (AttackRoutineHandle != null)
+            {
+                FaceTarget(PlayerTarget != null ? PlayerTarget.position : transform.position + transform.forward);
+            }
+            else if (HitStunTimer <= 0f)
+            {
+                float playerDistance = GetHorizontalDistanceToPlayer();
+                if (PlayerTarget != null && playerDistance <= DetectRange)
                 {
-                    status_name = i.Key;
-                    break;
+                    FaceTarget(PlayerTarget.position);
+
+                    if (playerDistance <= AttackRange)
+                    {
+                        TryAttackPlayer();
+                    }
+                    else
+                    {
+                        horizontalVelocity = GetMoveVelocity(PlayerTarget.position, Speed);
+                    }
+                }
+                else
+                {
+                    horizontalVelocity = GetWanderVelocity();
                 }
             }
-            if(status_name == Dissolve)
+
+            ApplyMovement(horizontalVelocity);
+            UpdateAnimation(horizontalVelocity);
+        }
+
+        public void TakeDamage(int damage)
+        {
+            if (damage <= 0 || HP <= 0)
             {
-                PlayerDissolve();
+                return;
             }
-            else if(status_name == Attack)
+
+            HP = Mathf.Max(0, HP - damage);
+
+            if (HP <= 0)
             {
-                PlayerAttack();
+                BeginDeath();
+                return;
             }
-            else if(status_name == Surprised)
+
+            if (AttackRoutineHandle != null)
             {
-                // nothing method
+                StopCoroutine(AttackRoutineHandle);
+                AttackRoutineHandle = null;
+            }
+
+            HitStunTimer = HitStunDuration;
+            CrossFadeState(SurprisedState);
+        }
+
+        private void ResolvePlayerTarget()
+        {
+            if (PlayerTarget != null)
+            {
+                return;
+            }
+
+            GameObject player = GameObject.FindGameObjectWithTag(PlayerTag);
+            if (player != null)
+            {
+                PlayerTarget = player.transform;
             }
         }
-        // Dissolve
-        if(HP <= 0 && !DissolveFlg)
+
+        private float GetHorizontalDistanceToPlayer()
         {
-            Anim.CrossFade(DissolveState, 0.1f, 0, 0);
+            if (PlayerTarget == null)
+            {
+                return float.MaxValue;
+            }
+
+            Vector3 toPlayer = PlayerTarget.position - transform.position;
+            toPlayer.y = 0f;
+            return toPlayer.magnitude;
+        }
+
+        private Vector3 GetMoveVelocity(Vector3 targetPosition, float moveSpeed)
+        {
+            Vector3 direction = targetPosition - transform.position;
+            direction.y = 0f;
+
+            if (direction.sqrMagnitude <= 0.01f)
+            {
+                return Vector3.zero;
+            }
+
+            FaceTarget(targetPosition);
+            return direction.normalized * moveSpeed;
+        }
+
+        private Vector3 GetWanderVelocity()
+        {
+            if (!HasDestination || Time.time >= NextWanderDecisionTime)
+            {
+                ChooseNewDestination();
+                return Vector3.zero;
+            }
+
+            Vector3 toDestination = CurrentDestination - transform.position;
+            toDestination.y = 0f;
+
+            if (toDestination.sqrMagnitude <= 0.4f)
+            {
+                HasDestination = false;
+                NextWanderDecisionTime = Time.time + Random.Range(WanderPauseMin, WanderPauseMax);
+                return Vector3.zero;
+            }
+
+            return GetMoveVelocity(CurrentDestination, Speed * 0.55f);
+        }
+
+        private void ChooseNewDestination()
+        {
+            Vector2 randomCircle = Random.insideUnitCircle * WanderRadius;
+            CurrentDestination = SpawnPosition + new Vector3(randomCircle.x, 0f, randomCircle.y);
+            CurrentDestination.y = transform.position.y;
+            HasDestination = true;
+            NextWanderDecisionTime = Time.time + Random.Range(2f, 4f);
+        }
+
+        private void TryAttackPlayer()
+        {
+            if (AttackRoutineHandle != null || AttackCooldownTimer > 0f || PlayerTarget == null)
+            {
+                return;
+            }
+
+            AttackRoutineHandle = StartCoroutine(AttackPlayerRoutine());
+        }
+
+        private IEnumerator AttackPlayerRoutine()
+        {
+            AttackCooldownTimer = AttackCooldown;
+            CrossFadeState(AttackState);
+
+            yield return new WaitForSeconds(AttackWindup);
+
+            if (!DissolveFlg && PlayerTarget != null && GetHorizontalDistanceToPlayer() <= AttackRange + 0.35f)
+            {
+                IDamageable damageable = PlayerTarget.GetComponentInParent<IDamageable>();
+                if (damageable != null)
+                {
+                    damageable.TakeDamage(AttackDamage);
+                }
+            }
+
+            AttackRoutineHandle = null;
+        }
+
+        private void BeginDeath()
+        {
+            if (AttackRoutineHandle != null)
+            {
+                StopCoroutine(AttackRoutineHandle);
+                AttackRoutineHandle = null;
+            }
+
             DissolveFlg = true;
+            RespawnTimer = RespawnDelay;
+            HitStunTimer = 0f;
+            HasDestination = false;
+            CrossFadeState(DissolveState);
         }
-        // processing at respawn
-        else if(HP == maxHP && DissolveFlg)
-        {
-            DissolveFlg = false;
-        }
-    }
 
-    //---------------------------------------------------------------------
-    // character status
-    //---------------------------------------------------------------------
-    private const int Dissolve = 1;
-    private const int Attack = 2;
-    private const int Surprised = 3;
-    private Dictionary<int, bool> PlayerStatus = new Dictionary<int, bool>
-    {
-        {Dissolve, false },
-        {Attack, false },
-        {Surprised, false },
-    };
-    //------------------------------
-    private void STATUS ()
-    {
-        // during dissolve
-        if(DissolveFlg && HP <= 0)
+        private void UpdateDissolveAndRespawn()
         {
-            PlayerStatus[Dissolve] = true;
-        }
-        else if(!DissolveFlg)
-        {
-            PlayerStatus[Dissolve] = false;
-        }
-        // during attacking
-        if(Anim.GetCurrentAnimatorStateInfo(0).tagHash == AttackTag)
-        {
-            PlayerStatus[Attack] = true;
-        }
-        else if(Anim.GetCurrentAnimatorStateInfo(0).tagHash != AttackTag)
-        {
-            PlayerStatus[Attack] = false;
-        }
-        // during damaging
-        if(Anim.GetCurrentAnimatorStateInfo(0).fullPathHash == SurprisedState)
-        {
-            PlayerStatus[Surprised] = true;
-        }
-        else if(Anim.GetCurrentAnimatorStateInfo(0).fullPathHash != SurprisedState)
-        {
-            PlayerStatus[Surprised] = false;
-        }
-    }
-    // dissolve shading
-    private void PlayerDissolve ()
-    {
-        Dissolve_value -= Time.deltaTime;
-        for(int i = 0; i < MeshR.Length; i++)
-        {
-            MeshR[i].material.SetFloat("_Dissolve", Dissolve_value);
-        }
-        if(Dissolve_value <= 0)
-        {
-            Ctrl.enabled = false;
-        }
-    }
-    // play a animation of Attack
-    private void PlayerAttack ()
-    {
-        if(Input.GetKeyDown(KeyCode.A))
-        {
-            Anim.CrossFade(AttackState,0.1f,0,0);
-        }
-    }
-    //---------------------------------------------------------------------
-    // gravity for fall of this character
-    //---------------------------------------------------------------------
-    private void GRAVITY ()
-    {
-        if(Ctrl.enabled)
-        {
-            if(CheckGrounded())
+            RespawnTimer -= Time.deltaTime;
+            Dissolve_value = Mathf.Max(0f, Dissolve_value - Time.deltaTime);
+            ApplyDissolveValue();
+
+            if (Dissolve_value <= 0f && Ctrl.enabled)
             {
-                if(MoveDirection.y < -0.1f)
+                Ctrl.enabled = false;
+            }
+
+            if (RespawnTimer <= 0f)
+            {
+                Respawn();
+            }
+        }
+
+        private void Respawn()
+        {
+            HP = MaxHP;
+            AttackCooldownTimer = 0f;
+            HitStunTimer = 0f;
+            DissolveFlg = false;
+            HasDestination = false;
+
+            ResetDissolve();
+
+            Ctrl.enabled = false;
+            transform.position = SpawnPosition;
+            transform.rotation = SpawnRotation;
+            Ctrl.enabled = true;
+
+            VerticalVelocity = 0f;
+            CrossFadeState(IdleState);
+        }
+
+        private void ApplyMovement(Vector3 horizontalVelocity)
+        {
+            if (!Ctrl.enabled)
+            {
+                return;
+            }
+
+            if (CheckGrounded() && VerticalVelocity < 0f)
+            {
+                VerticalVelocity = -2f;
+            }
+
+            VerticalVelocity += Gravity * Time.deltaTime;
+
+            Vector3 motion = horizontalVelocity;
+            motion.y = VerticalVelocity;
+            Ctrl.Move(motion * Time.deltaTime);
+        }
+
+        private bool CheckGrounded()
+        {
+            if (Ctrl.isGrounded)
+            {
+                return true;
+            }
+
+            Vector3 origin = transform.position + Vector3.up * 0.15f;
+            return Physics.Raycast(origin, Vector3.down, 0.3f, Physics.AllLayers, QueryTriggerInteraction.Ignore);
+        }
+
+        private void FaceTarget(Vector3 worldPosition)
+        {
+            Vector3 lookDirection = worldPosition - transform.position;
+            lookDirection.y = 0f;
+
+            if (lookDirection.sqrMagnitude <= 0.001f)
+            {
+                return;
+            }
+
+            Quaternion targetRotation = Quaternion.LookRotation(lookDirection.normalized, Vector3.up);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, RotationSpeed * Time.deltaTime);
+        }
+
+        private void UpdateAnimation(Vector3 horizontalVelocity)
+        {
+            if (DissolveFlg || AttackRoutineHandle != null || HitStunTimer > 0f)
+            {
+                return;
+            }
+
+            if (horizontalVelocity.sqrMagnitude > 0.05f)
+            {
+                CrossFadeState(MoveState);
+            }
+            else
+            {
+                CrossFadeState(IdleState);
+            }
+        }
+
+        private void CrossFadeState(int stateHash)
+        {
+            AnimatorStateInfo currentState = Anim.GetCurrentAnimatorStateInfo(0);
+            if (currentState.fullPathHash == stateHash)
+            {
+                return;
+            }
+
+            Anim.CrossFade(stateHash, 0.1f, 0, 0f);
+        }
+
+        private void ResetDissolve()
+        {
+            Dissolve_value = 1f;
+            ApplyDissolveValue();
+        }
+
+        private void ApplyDissolveValue()
+        {
+            if (MeshR == null)
+            {
+                return;
+            }
+
+            for (int index = 0; index < MeshR.Length; index++)
+            {
+                if (MeshR[index] == null)
                 {
-                    MoveDirection.y = -0.1f;
+                    continue;
+                }
+
+                Material material = MeshR[index].material;
+                if (material.HasProperty("_Dissolve"))
+                {
+                    material.SetFloat("_Dissolve", Dissolve_value);
                 }
             }
-            MoveDirection.y -= 0.1f;
-            Ctrl.Move(MoveDirection * Time.deltaTime);
+        }
+
+        private void OnDrawGizmosSelected()
+        {
+            Gizmos.color = new Color(0.2f, 0.7f, 1f, 0.25f);
+            Gizmos.DrawSphere(transform.position, DetectRange);
+
+            Gizmos.color = new Color(1f, 0.2f, 0.2f, 0.25f);
+            Gizmos.DrawSphere(transform.position, AttackRange);
+
+            Gizmos.color = new Color(0.3f, 1f, 0.4f, 0.2f);
+            Gizmos.DrawSphere(Application.isPlaying ? SpawnPosition : transform.position, WanderRadius);
         }
     }
-    //---------------------------------------------------------------------
-    // whether it is grounded
-    //---------------------------------------------------------------------
-    private bool CheckGrounded()
-    {
-        if (Ctrl.isGrounded && Ctrl.enabled)
-        {
-            return true;
-        }
-        Ray ray = new Ray(this.transform.position + Vector3.up * 0.1f, Vector3.down);
-        float range = 0.2f;
-        return Physics.Raycast(ray, range);
-    }
-    //---------------------------------------------------------------------
-    // for slime moving
-    //---------------------------------------------------------------------
-    private void MOVE ()
-    {
-        // velocity
-        if(Anim.GetCurrentAnimatorStateInfo(0).fullPathHash == MoveState)
-        {
-            if (Input.GetKey(KeyCode.UpArrow) && !Input.GetKey(KeyCode.DownArrow) && !Input.GetKey(KeyCode.LeftArrow) && !Input.GetKey(KeyCode.RightArrow))
-            {
-                MOVE_Velocity(new Vector3(0, 0, -Speed), new Vector3(0, 180, 0));
-            }
-            else if (Input.GetKey(KeyCode.DownArrow) && !Input.GetKey(KeyCode.UpArrow) && !Input.GetKey(KeyCode.LeftArrow) && !Input.GetKey(KeyCode.RightArrow))
-            {
-                MOVE_Velocity(new Vector3(0, 0, Speed), new Vector3(0, 0, 0));
-            }
-            else if (Input.GetKey(KeyCode.LeftArrow) && !Input.GetKey(KeyCode.UpArrow) && !Input.GetKey(KeyCode.DownArrow) && !Input.GetKey(KeyCode.RightArrow))
-            {
-                MOVE_Velocity(new Vector3(Speed, 0, 0), new Vector3(0, 90, 0));
-            }
-            else if (Input.GetKey(KeyCode.RightArrow) && !Input.GetKey(KeyCode.UpArrow) && !Input.GetKey(KeyCode.DownArrow) && !Input.GetKey(KeyCode.LeftArrow))
-            {
-                MOVE_Velocity(new Vector3(-Speed, 0, 0), new Vector3(0, 270, 0));
-            }
-        }
-        KEY_DOWN();
-        KEY_UP();
-    }
-    //---------------------------------------------------------------------
-    // value for moving
-    //---------------------------------------------------------------------
-    private void MOVE_Velocity (Vector3 velocity, Vector3 rot)
-    {
-        MoveDirection = new Vector3 (velocity.x, MoveDirection.y, velocity.z);
-        if(Ctrl.enabled)
-        {
-            Ctrl.Move(MoveDirection * Time.deltaTime);
-        }
-        MoveDirection.x = 0;
-        MoveDirection.z = 0;
-        this.transform.rotation = Quaternion.Euler(rot);
-    }
-    //---------------------------------------------------------------------
-    // whether arrow key is key down
-    //---------------------------------------------------------------------
-    private void KEY_DOWN ()
-    {
-        if (Input.GetKeyDown(KeyCode.UpArrow))
-        {
-            Anim.CrossFade(MoveState, 0.1f, 0, 0);
-        }
-        else if (Input.GetKeyDown(KeyCode.DownArrow))
-        {
-            Anim.CrossFade(MoveState, 0.1f, 0, 0);
-        }
-        else if (Input.GetKeyDown(KeyCode.LeftArrow))
-        {
-            Anim.CrossFade(MoveState, 0.1f, 0, 0);
-        }
-        else if (Input.GetKeyDown(KeyCode.RightArrow))
-        {
-            Anim.CrossFade(MoveState, 0.1f, 0, 0);
-        }
-    }
-    //---------------------------------------------------------------------
-    // whether arrow key is key up
-    //---------------------------------------------------------------------
-    private void KEY_UP ()
-    {
-        if (Input.GetKeyUp(KeyCode.UpArrow))
-        {
-            if(!Input.GetKey(KeyCode.DownArrow) && !Input.GetKey(KeyCode.LeftArrow) && !Input.GetKey(KeyCode.RightArrow))
-            {
-                Anim.CrossFade(IdleState, 0.1f, 0, 0);
-            }
-        }
-        else if (Input.GetKeyUp(KeyCode.DownArrow))
-        {
-            if(!Input.GetKey(KeyCode.UpArrow) && !Input.GetKey(KeyCode.LeftArrow) && !Input.GetKey(KeyCode.RightArrow))
-            {
-                Anim.CrossFade(IdleState, 0.1f, 0, 0);
-            }
-        }
-        else if (Input.GetKeyUp(KeyCode.LeftArrow))
-        {
-            if(!Input.GetKey(KeyCode.UpArrow) && !Input.GetKey(KeyCode.DownArrow) && !Input.GetKey(KeyCode.RightArrow))
-            {
-                Anim.CrossFade(IdleState, 0.1f, 0, 0);
-            }
-        }
-        else if (Input.GetKeyUp(KeyCode.RightArrow))
-        {
-            if(!Input.GetKey(KeyCode.UpArrow) && !Input.GetKey(KeyCode.DownArrow) && !Input.GetKey(KeyCode.LeftArrow))
-            {
-                Anim.CrossFade(IdleState, 0.1f, 0, 0);
-            }
-        }
-    }
-    //---------------------------------------------------------------------
-    // damage
-    //---------------------------------------------------------------------
-    private void Damage ()
-    {
-        // Damaged by outside field.
-        if(Input.GetKeyUp(KeyCode.S))
-        {
-            Anim.CrossFade(SurprisedState, 0.1f, 0, 0);
-            HP--;
-            HP_text.text = "HP " + HP.ToString();
-        }
-    }
-    //---------------------------------------------------------------------
-    // respawn
-    //---------------------------------------------------------------------
-    private void Respawn ()
-    {
-        if(Input.GetKeyDown(KeyCode.Space))
-        {
-            // player HP
-            HP = maxHP;
-            
-            Ctrl.enabled = false;
-            this.transform.position = Vector3.zero; // player position
-            this.transform.rotation = Quaternion.Euler(Vector3.zero); // player facing
-            Ctrl.enabled = true;
-            
-            // reset Dissolve
-            Dissolve_value = 1;
-            for(int i = 0; i < MeshR.Length; i++)
-            {
-                MeshR[i].material.SetFloat("_Dissolve", Dissolve_value);
-            }
-            // reset animation
-            Anim.CrossFade(IdleState, 0.1f, 0, 0);
-        }
-    }
-}
 }

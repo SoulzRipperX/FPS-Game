@@ -1,268 +1,362 @@
-﻿using UnityEngine;
+using System.Collections;
+using TMPro;
+using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
 
 namespace StarterAssets
 {
-	[RequireComponent(typeof(CharacterController))]
+    [RequireComponent(typeof(CharacterController))]
 #if ENABLE_INPUT_SYSTEM
-	[RequireComponent(typeof(PlayerInput))]
+    [RequireComponent(typeof(PlayerInput))]
 #endif
-	public class FirstPersonController : MonoBehaviour
-	{
-		[Header("Player")]
-		[Tooltip("Move speed of the character in m/s")]
-		public float MoveSpeed = 4.0f;
-		[Tooltip("Sprint speed of the character in m/s")]
-		public float SprintSpeed = 6.0f;
-		[Tooltip("Rotation speed of the character")]
-		public float RotationSpeed = 1.0f;
-		[Tooltip("Acceleration and deceleration")]
-		public float SpeedChangeRate = 10.0f;
+    public class FirstPersonController : MonoBehaviour, IDamageable
+    {
+        [Header("Player")]
+        [Tooltip("Move speed of the character in m/s")]
+        public float MoveSpeed = 4.0f;
+        [Tooltip("Sprint speed of the character in m/s")]
+        public float SprintSpeed = 6.0f;
+        [Tooltip("Rotation speed of the character")]
+        public float RotationSpeed = 1.0f;
+        [Tooltip("Acceleration and deceleration")]
+        public float SpeedChangeRate = 10.0f;
 
-		[Space(10)]
-		[Tooltip("The height the player can jump")]
-		public float JumpHeight = 1.2f;
-		[Tooltip("The character uses its own gravity value. The engine default is -9.81f")]
-		public float Gravity = -15.0f;
+        [Space(10)]
+        [Tooltip("The height the player can jump")]
+        public float JumpHeight = 1.2f;
+        [Tooltip("The character uses its own gravity value. The engine default is -9.81f")]
+        public float Gravity = -15.0f;
 
-		[Space(10)]
-		[Tooltip("Time required to pass before being able to jump again. Set to 0f to instantly jump again")]
-		public float JumpTimeout = 0.1f;
-		[Tooltip("Time required to pass before entering the fall state. Useful for walking down stairs")]
-		public float FallTimeout = 0.15f;
+        [Space(10)]
+        [Tooltip("Time required to pass before being able to jump again. Set to 0f to instantly jump again")]
+        public float JumpTimeout = 0.1f;
+        [Tooltip("Time required to pass before entering the fall state. Useful for walking down stairs")]
+        public float FallTimeout = 0.15f;
 
-		[Header("Player Grounded")]
-		[Tooltip("If the character is grounded or not. Not part of the CharacterController built in grounded check")]
-		public bool Grounded = true;
-		[Tooltip("Useful for rough ground")]
-		public float GroundedOffset = -0.14f;
-		[Tooltip("The radius of the grounded check. Should match the radius of the CharacterController")]
-		public float GroundedRadius = 0.5f;
-		[Tooltip("What layers the character uses as ground")]
-		public LayerMask GroundLayers;
+        [Header("Player Grounded")]
+        [Tooltip("If the character is grounded or not. Not part of the CharacterController built in grounded check")]
+        public bool Grounded = true;
+        [Tooltip("Useful for rough ground")]
+        public float GroundedOffset = -0.14f;
+        [Tooltip("The radius of the grounded check. Should match the radius of the CharacterController")]
+        public float GroundedRadius = 0.5f;
+        [Tooltip("What layers the character uses as ground")]
+        public LayerMask GroundLayers;
 
-		[Header("Cinemachine")]
-		[Tooltip("The follow target set in the Cinemachine Virtual Camera that the camera will follow")]
-		public GameObject CinemachineCameraTarget;
-		[Tooltip("How far in degrees can you move the camera up")]
-		public float TopClamp = 90.0f;
-		[Tooltip("How far in degrees can you move the camera down")]
-		public float BottomClamp = -90.0f;
+        [Header("Cinemachine")]
+        [Tooltip("The follow target set in the Cinemachine Virtual Camera that the camera will follow")]
+        public GameObject CinemachineCameraTarget;
+        [Tooltip("How far in degrees can you move the camera up")]
+        public float TopClamp = 90.0f;
+        [Tooltip("How far in degrees can you move the camera down")]
+        public float BottomClamp = -90.0f;
 
-		// cinemachine
-		private float _cinemachineTargetPitch;
+        [Header("Combat")]
+        [Tooltip("Maximum health for the player")]
+        public int MaxHealth = 100;
+        [Tooltip("Damage immunity window after taking a hit")]
+        public float DamageCooldown = 0.35f;
+        [Tooltip("Delay before respawning when health reaches zero")]
+        public float RespawnDelay = 1.0f;
+        [Tooltip("Optional manual respawn point")]
+        public Transform RespawnPoint;
+        [Tooltip("Optional weapon transform. Leave empty to auto-detect a child named like a gun")]
+        public Transform EquippedWeapon;
+        [Tooltip("Optional health label. Leave empty to auto-create one")]
+        public TMP_Text HealthText;
 
-		// player
-		private float _speed;
-		private float _rotationVelocity;
-		private float _verticalVelocity;
-		private float _terminalVelocity = 53.0f;
+        private float _cinemachineTargetPitch;
+        private float _speed;
+        private float _rotationVelocity;
+        private float _verticalVelocity;
+        private const float _terminalVelocity = 53.0f;
 
-		// timeout deltatime
-		private float _jumpTimeoutDelta;
-		private float _fallTimeoutDelta;
+        private float _jumpTimeoutDelta;
+        private float _fallTimeoutDelta;
+        private float _damageCooldownDelta;
 
-	
 #if ENABLE_INPUT_SYSTEM
-		private PlayerInput _playerInput;
+        private PlayerInput _playerInput;
 #endif
-		private CharacterController _controller;
-		private StarterAssetsInputs _input;
-		private GameObject _mainCamera;
+        private CharacterController _controller;
+        private StarterAssetsInputs _input;
+        private GameObject _mainCamera;
+        private int _currentHealth;
+        private bool _isRespawning;
+        private Vector3 _spawnPosition;
+        private Quaternion _spawnRotation;
 
-		private const float _threshold = 0.01f;
+        private const float _threshold = 0.01f;
 
-		private bool IsCurrentDeviceMouse
-		{
-			get
-			{
-				#if ENABLE_INPUT_SYSTEM
-				return _playerInput.currentControlScheme == "KeyboardMouse";
-				#else
-				return false;
-				#endif
-			}
-		}
+        public bool IsAlive => !_isRespawning && _currentHealth > 0;
 
-		private void Awake()
-		{
-			// get a reference to our main camera
-			if (_mainCamera == null)
-			{
-				_mainCamera = GameObject.FindGameObjectWithTag("MainCamera");
-			}
-		}
-
-		private void Start()
-		{
-			_controller = GetComponent<CharacterController>();
-			_input = GetComponent<StarterAssetsInputs>();
+        private bool IsCurrentDeviceMouse
+        {
+            get
+            {
 #if ENABLE_INPUT_SYSTEM
-			_playerInput = GetComponent<PlayerInput>();
+                return _playerInput.currentControlScheme == "KeyboardMouse";
 #else
-			Debug.LogError( "Starter Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
+                return false;
+#endif
+            }
+        }
+
+        private void Awake()
+        {
+            if (_mainCamera == null)
+            {
+                _mainCamera = GameObject.FindGameObjectWithTag("MainCamera");
+            }
+        }
+
+        private void Start()
+        {
+            _controller = GetComponent<CharacterController>();
+            _input = GetComponent<StarterAssetsInputs>();
+#if ENABLE_INPUT_SYSTEM
+            _playerInput = GetComponent<PlayerInput>();
+#else
+            Debug.LogError("Starter Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
 #endif
 
-			// reset our timeouts on start
-			_jumpTimeoutDelta = JumpTimeout;
-			_fallTimeoutDelta = FallTimeout;
-		}
+            _jumpTimeoutDelta = JumpTimeout;
+            _fallTimeoutDelta = FallTimeout;
+            _currentHealth = MaxHealth;
+            _spawnPosition = transform.position;
+            _spawnRotation = transform.rotation;
 
-		private void Update()
-		{
-			JumpAndGravity();
-			GroundedCheck();
-			Move();
-		}
+            ValidateSetup();
+            UpdateHealthUI();
+            EnsureWeaponSetup();
+        }
 
-		private void LateUpdate()
-		{
-			CameraRotation();
-		}
+        private void Update()
+        {
+            if (_damageCooldownDelta > 0.0f)
+            {
+                _damageCooldownDelta -= Time.deltaTime;
+            }
 
-		private void GroundedCheck()
-		{
-			// set sphere position, with offset
-			Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z);
-			Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers, QueryTriggerInteraction.Ignore);
-		}
+            if (_isRespawning)
+            {
+                return;
+            }
 
-		private void CameraRotation()
-		{
-			// if there is an input
-			if (_input.look.sqrMagnitude >= _threshold)
-			{
-				//Don't multiply mouse input by Time.deltaTime
-				float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
-				
-				_cinemachineTargetPitch += _input.look.y * RotationSpeed * deltaTimeMultiplier;
-				_rotationVelocity = _input.look.x * RotationSpeed * deltaTimeMultiplier;
+            JumpAndGravity();
+            GroundedCheck();
+            Move();
+        }
 
-				// clamp our pitch rotation
-				_cinemachineTargetPitch = ClampAngle(_cinemachineTargetPitch, BottomClamp, TopClamp);
+        private void LateUpdate()
+        {
+            if (_isRespawning)
+            {
+                return;
+            }
 
-				// Update Cinemachine camera target pitch
-				CinemachineCameraTarget.transform.localRotation = Quaternion.Euler(_cinemachineTargetPitch, 0.0f, 0.0f);
+            CameraRotation();
+        }
 
-				// rotate the player left and right
-				transform.Rotate(Vector3.up * _rotationVelocity);
-			}
-		}
+        public void TakeDamage(int damage)
+        {
+            if (damage <= 0 || !IsAlive || _damageCooldownDelta > 0.0f)
+            {
+                return;
+            }
 
-		private void Move()
-		{
-			// set target speed based on move speed, sprint speed and if sprint is pressed
-			float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
+            _currentHealth = Mathf.Max(0, _currentHealth - damage);
+            _damageCooldownDelta = DamageCooldown;
+            UpdateHealthUI();
 
-			// a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
+            if (_currentHealth <= 0)
+            {
+                StartCoroutine(RespawnRoutine());
+            }
+        }
 
-			// note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-			// if there is no input, set the target speed to 0
-			if (_input.move == Vector2.zero) targetSpeed = 0.0f;
+        private void GroundedCheck()
+        {
+            Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z);
+            Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers, QueryTriggerInteraction.Ignore);
+        }
 
-			// a reference to the players current horizontal velocity
-			float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
+        private void CameraRotation()
+        {
+            if (_input.look.sqrMagnitude >= _threshold)
+            {
+                float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
 
-			float speedOffset = 0.1f;
-			float inputMagnitude = _input.analogMovement ? _input.move.magnitude : 1f;
+                _cinemachineTargetPitch += _input.look.y * RotationSpeed * deltaTimeMultiplier;
+                _rotationVelocity = _input.look.x * RotationSpeed * deltaTimeMultiplier;
 
-			// accelerate or decelerate to target speed
-			if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
-			{
-				// creates curved result rather than a linear one giving a more organic speed change
-				// note T in Lerp is clamped, so we don't need to clamp our speed
-				_speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude, Time.deltaTime * SpeedChangeRate);
+                _cinemachineTargetPitch = ClampAngle(_cinemachineTargetPitch, BottomClamp, TopClamp);
 
-				// round speed to 3 decimal places
-				_speed = Mathf.Round(_speed * 1000f) / 1000f;
-			}
-			else
-			{
-				_speed = targetSpeed;
-			}
+                CinemachineCameraTarget.transform.localRotation = Quaternion.Euler(_cinemachineTargetPitch, 0.0f, 0.0f);
+                transform.Rotate(Vector3.up * _rotationVelocity);
+            }
+        }
 
-			// normalise input direction
-			Vector3 inputDirection = new Vector3(_input.move.x, 0.0f, _input.move.y).normalized;
+        private void Move()
+        {
+            float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
 
-			// note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-			// if there is a move input rotate player when the player is moving
-			if (_input.move != Vector2.zero)
-			{
-				// move
-				inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
-			}
+            if (_input.move == Vector2.zero)
+            {
+                targetSpeed = 0.0f;
+            }
 
-			// move the player
-			_controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
-		}
+            float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
+            float speedOffset = 0.1f;
+            float inputMagnitude = _input.analogMovement ? _input.move.magnitude : 1f;
 
-		private void JumpAndGravity()
-		{
-			if (Grounded)
-			{
-				// reset the fall timeout timer
-				_fallTimeoutDelta = FallTimeout;
+            if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
+            {
+                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude, Time.deltaTime * SpeedChangeRate);
+                _speed = Mathf.Round(_speed * 1000f) / 1000f;
+            }
+            else
+            {
+                _speed = targetSpeed;
+            }
 
-				// stop our velocity dropping infinitely when grounded
-				if (_verticalVelocity < 0.0f)
-				{
-					_verticalVelocity = -2f;
-				}
+            Vector3 inputDirection = new Vector3(_input.move.x, 0.0f, _input.move.y).normalized;
 
-				// Jump
-				if (_input.jump && _jumpTimeoutDelta <= 0.0f)
-				{
-					// the square root of H * -2 * G = how much velocity needed to reach desired height
-					_verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
-				}
+            if (_input.move != Vector2.zero)
+            {
+                inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
+            }
 
-				// jump timeout
-				if (_jumpTimeoutDelta >= 0.0f)
-				{
-					_jumpTimeoutDelta -= Time.deltaTime;
-				}
-			}
-			else
-			{
-				// reset the jump timeout timer
-				_jumpTimeoutDelta = JumpTimeout;
+            _controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+        }
 
-				// fall timeout
-				if (_fallTimeoutDelta >= 0.0f)
-				{
-					_fallTimeoutDelta -= Time.deltaTime;
-				}
+        private void JumpAndGravity()
+        {
+            if (Grounded)
+            {
+                _fallTimeoutDelta = FallTimeout;
 
-				// if we are not grounded, do not jump
-				_input.jump = false;
-			}
+                if (_verticalVelocity < 0.0f)
+                {
+                    _verticalVelocity = -2f;
+                }
 
-			// apply gravity over time if under terminal (multiply by delta time twice to linearly speed up over time)
-			if (_verticalVelocity < _terminalVelocity)
-			{
-				_verticalVelocity += Gravity * Time.deltaTime;
-			}
-		}
+                if (_input.jump && _jumpTimeoutDelta <= 0.0f)
+                {
+                    _verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
+                }
 
-		private static float ClampAngle(float lfAngle, float lfMin, float lfMax)
-		{
-			if (lfAngle < -360f) lfAngle += 360f;
-			if (lfAngle > 360f) lfAngle -= 360f;
-			return Mathf.Clamp(lfAngle, lfMin, lfMax);
-		}
+                if (_jumpTimeoutDelta >= 0.0f)
+                {
+                    _jumpTimeoutDelta -= Time.deltaTime;
+                }
+            }
+            else
+            {
+                _jumpTimeoutDelta = JumpTimeout;
 
-		private void OnDrawGizmosSelected()
-		{
-			Color transparentGreen = new Color(0.0f, 1.0f, 0.0f, 0.35f);
-			Color transparentRed = new Color(1.0f, 0.0f, 0.0f, 0.35f);
+                if (_fallTimeoutDelta >= 0.0f)
+                {
+                    _fallTimeoutDelta -= Time.deltaTime;
+                }
 
-			if (Grounded) Gizmos.color = transparentGreen;
-			else Gizmos.color = transparentRed;
+                _input.jump = false;
+            }
 
-			// when selected, draw a gizmo in the position of, and matching radius of, the grounded collider
-			Gizmos.DrawSphere(new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z), GroundedRadius);
-		}
-	}
+            if (_verticalVelocity < _terminalVelocity)
+            {
+                _verticalVelocity += Gravity * Time.deltaTime;
+            }
+        }
+
+        private static float ClampAngle(float lfAngle, float lfMin, float lfMax)
+        {
+            if (lfAngle < -360f) lfAngle += 360f;
+            if (lfAngle > 360f) lfAngle -= 360f;
+            return Mathf.Clamp(lfAngle, lfMin, lfMax);
+        }
+
+        private void OnDrawGizmosSelected()
+        {
+            Color transparentGreen = new Color(0.0f, 1.0f, 0.0f, 0.35f);
+            Color transparentRed = new Color(1.0f, 0.0f, 0.0f, 0.35f);
+
+            Gizmos.color = Grounded ? transparentGreen : transparentRed;
+            Gizmos.DrawSphere(new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z), GroundedRadius);
+        }
+
+        private void ValidateSetup()
+        {
+            if (HealthText == null)
+            {
+                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} has no HealthText assigned.");
+            }
+
+            if (EquippedWeapon == null)
+            {
+                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} has no EquippedWeapon assigned.");
+            }
+        }
+
+        private void UpdateHealthUI()
+        {
+            if (HealthText == null)
+            {
+                return;
+            }
+
+            HealthText.text = $"HP {_currentHealth} / {MaxHealth}";
+        }
+
+        private IEnumerator RespawnRoutine()
+        {
+            _isRespawning = true;
+            _input.move = Vector2.zero;
+            _input.jump = false;
+            _verticalVelocity = 0.0f;
+
+            yield return new WaitForSeconds(RespawnDelay);
+
+            Vector3 targetPosition = RespawnPoint != null ? RespawnPoint.position : _spawnPosition;
+            Quaternion targetRotation = RespawnPoint != null ? RespawnPoint.rotation : _spawnRotation;
+
+            _controller.enabled = false;
+            transform.position = targetPosition;
+            transform.rotation = targetRotation;
+            _controller.enabled = true;
+
+            _currentHealth = MaxHealth;
+            _damageCooldownDelta = DamageCooldown;
+            _jumpTimeoutDelta = JumpTimeout;
+            _fallTimeoutDelta = FallTimeout;
+            _isRespawning = false;
+            UpdateHealthUI();
+        }
+
+        private void EnsureWeaponSetup()
+        {
+            Camera cameraComponent = _mainCamera != null ? _mainCamera.GetComponent<Camera>() : Camera.main;
+            if (cameraComponent == null)
+            {
+                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} could not find a main camera.");
+                return;
+            }
+
+            if (EquippedWeapon == null)
+            {
+                return;
+            }
+
+            GunScript gun = EquippedWeapon.GetComponent<GunScript>();
+            if (gun == null)
+            {
+                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} needs a {nameof(GunScript)} on the assigned EquippedWeapon.");
+                return;
+            }
+
+            gun.Configure(cameraComponent, transform);
+        }
+    }
 }
