@@ -65,15 +65,27 @@ namespace StarterAssets
 		{
 			sprint = newSprintState;
 		}
+
+		public void SetGameplayInputEnabled(bool enabled)
+		{
+			move = Vector2.zero;
+			look = Vector2.zero;
+			jump = false;
+			sprint = false;
+			cursorLocked = enabled;
+			cursorInputForLook = enabled;
+			SetCursorState(enabled);
+		}
 		
 		private void OnApplicationFocus(bool hasFocus)
 		{
 			SetCursorState(cursorLocked);
 		}
 
-		private void SetCursorState(bool newState)
+		public void SetCursorState(bool newState)
 		{
 			Cursor.lockState = newState ? CursorLockMode.Locked : CursorLockMode.None;
+			Cursor.visible = !newState;
 		}
 	}
 	

@@ -32,6 +32,7 @@ public class GunScript : MonoBehaviour
     [SerializeField] private ParticleSystem MuzzleFlash;
     [SerializeField] private Light MuzzleLight;
     [SerializeField] private AudioClip ShootClip;
+    [SerializeField] private AudioClip ReloadClip;
     [SerializeField] private TMP_Text AmmoText;
 
     private AudioSource AudioSource;
@@ -60,6 +61,11 @@ public class GunScript : MonoBehaviour
 
     private void Update()
     {
+        if (MenuController.IsGamePaused)
+        {
+            return;
+        }
+
         ResolveReferences();
 
         if (IsReloading)
@@ -181,6 +187,7 @@ public class GunScript : MonoBehaviour
 
         IsReloading = true;
         UpdateAmmoLabel("Reloading...");
+        PlayReloadFeedback();
 
         yield return new WaitForSeconds(ReloadDuration);
 
@@ -217,6 +224,11 @@ public class GunScript : MonoBehaviour
         {
             Debug.LogWarning($"{nameof(GunScript)} on {name} has no ShootClip assigned.");
         }
+
+        if (ReloadClip == null)
+        {
+            Debug.LogWarning($"{nameof(GunScript)} on {name} has no ReloadClip assigned.");
+        }
     }
 
     private void UpdateAmmoLabel(string customText = null)
@@ -227,6 +239,17 @@ public class GunScript : MonoBehaviour
         }
 
         AmmoText.text = customText ?? $"AMMO {CurrentAmmo} / {MagazineSize}";
+    }
+
+    private void PlayReloadFeedback()
+    {
+        if (ReloadClip == null)
+        {
+            return;
+        }
+
+        AudioSource.pitch = 1f;
+        AudioSource.PlayOneShot(ReloadClip);
     }
 
     private bool WasFirePressedThisFrame()
