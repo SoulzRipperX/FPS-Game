@@ -29,6 +29,10 @@ namespace Sample
         [Header("Combat")]
         [SerializeField] private float DetectRange = 12f;
         [SerializeField] private float AttackRange = 1.75f;
+        [SerializeField] private Transform AttackPoint;
+        [SerializeField] private float AttackForwardOffset = 0.15f;
+        [SerializeField] private float AttackHeightOffset = 0.45f;
+        [SerializeField] private float AttackHitRadius = 0.35f;
         [SerializeField] private float AttackCooldown = 1.2f;
         [SerializeField] private float AttackWindup = 0.35f;
         [SerializeField] private float HitStunDuration = 0.35f;
@@ -50,7 +54,9 @@ namespace Sample
         private int HP;
         private bool DissolveFlg;
         private bool HasDestination;
+        private bool AttackNeedsReset;
         private Coroutine AttackRoutineHandle;
+        private readonly Collider[] AttackHitBuffer = new Collider[8];
 
         private void Awake()
         {
@@ -87,6 +93,11 @@ namespace Sample
                 HitStunTimer -= Time.deltaTime;
             }
 
+            if (AttackNeedsReset && !IsPlayerInsideAttackZone())
+            {
+                AttackNeedsReset = false;
+            }
+
             if (DissolveFlg)
             {
                 UpdateDissolveAndRespawn();
@@ -106,7 +117,7 @@ namespace Sample
                 {
                     FaceTarget(PlayerTarget.position);
 
-                    if (playerDistance <= AttackRange)
+                    if (IsPlayerInsideAttackZone())
                     {
                         TryAttackPlayer();
                     }
@@ -222,7 +233,7 @@ namespace Sample
 
         private void TryAttackPlayer()
         {
-            if (AttackRoutineHandle != null || AttackCooldownTimer > 0f || PlayerTarget == null)
+            if (AttackRoutineHandle != null || AttackCooldownTimer > 0f || PlayerTarget == null || AttackNeedsReset)
             {
                 return;
             }
@@ -237,16 +248,79 @@ namespace Sample
 
             yield return new WaitForSeconds(AttackWindup);
 
-            if (!DissolveFlg && PlayerTarget != null && GetHorizontalDistanceToPlayer() <= AttackRange + 0.35f)
+            if (!DissolveFlg && TryGetPlayerDamageableInAttackZone(out IDamageable damageable))
             {
-                IDamageable damageable = PlayerTarget.GetComponentInParent<IDamageable>();
-                if (damageable != null)
-                {
-                    damageable.TakeDamage(AttackDamage);
-                }
+                damageable.TakeDamage(AttackDamage);
+                AttackNeedsReset = true;
             }
 
             AttackRoutineHandle = null;
+        }
+
+        private bool IsPlayerInsideAttackZone()
+        {
+            return TryGetPlayerDamageableInAttackZone(out _);
+        }
+
+        private bool TryGetPlayerDamageableInAttackZone(out IDamageable damageable)
+        {
+            damageable = null;
+            if (PlayerTarget == null)
+            {
+                return false;
+            }
+
+            Vector3 attackOrigin = GetAttackOrigin();
+            int hitCount = Physics.OverlapSphereNonAlloc(
+                attackOrigin,
+                AttackHitRadius,
+                AttackHitBuffer,
+                Physics.AllLayers,
+                QueryTriggerInteraction.Ignore);
+
+            Transform playerRoot = PlayerTarget.root;
+            for (int index = 0; index < hitCount; index++)
+            {
+                Collider hitCollider = AttackHitBuffer[index];
+                if (hitCollider == null)
+                {
+                    continue;
+                }
+
+                Transform hitRoot = hitCollider.transform.root;
+                if (hitRoot != playerRoot)
+                {
+                    continue;
+                }
+
+                damageable = hitCollider.GetComponentInParent<IDamageable>();
+                if (damageable == null)
+                {
+                    damageable = PlayerTarget.GetComponentInParent<IDamageable>();
+                }
+
+                return damageable != null;
+            }
+
+            return false;
+        }
+
+        private Vector3 GetAttackOrigin()
+        {
+            if (AttackPoint != null)
+            {
+                return AttackPoint.position;
+            }
+
+            float horizontalScale = Mathf.Max(Mathf.Abs(transform.lossyScale.x), Mathf.Abs(transform.lossyScale.z));
+            float verticalScale = Mathf.Abs(transform.lossyScale.y);
+            float bodyFrontOffset = Ctrl != null ? Ctrl.radius * horizontalScale : 0.35f * horizontalScale;
+            float bodyHeight = Ctrl != null ? Ctrl.height * verticalScale : 1f * verticalScale;
+            float attackHeight = Mathf.Clamp(bodyHeight * 0.5f, 0.35f, 1.4f) + AttackHeightOffset;
+
+            return transform.position
+                + Vector3.up * attackHeight
+                + transform.forward * (bodyFrontOffset + AttackForwardOffset);
         }
 
         private void BeginDeath()
@@ -261,6 +335,7 @@ namespace Sample
             RespawnTimer = RespawnDelay;
             HitStunTimer = 0f;
             HasDestination = false;
+            AttackNeedsReset = false;
             CrossFadeState(DissolveState);
         }
 
@@ -288,6 +363,7 @@ namespace Sample
             HitStunTimer = 0f;
             DissolveFlg = false;
             HasDestination = false;
+            AttackNeedsReset = false;
 
             ResetDissolve();
 
@@ -405,8 +481,11 @@ namespace Sample
             Gizmos.color = new Color(0.2f, 0.7f, 1f, 0.25f);
             Gizmos.DrawSphere(transform.position, DetectRange);
 
-            Gizmos.color = new Color(1f, 0.2f, 0.2f, 0.25f);
+            Gizmos.color = new Color(1f, 0.8f, 0.15f, 0.2f);
             Gizmos.DrawSphere(transform.position, AttackRange);
+
+            Gizmos.color = new Color(1f, 0.2f, 0.2f, 0.35f);
+            Gizmos.DrawSphere(GetAttackOrigin(), AttackHitRadius);
 
             Gizmos.color = new Color(0.3f, 1f, 0.4f, 0.2f);
             Gizmos.DrawSphere(Application.isPlaying ? SpawnPosition : transform.position, WanderRadius);
