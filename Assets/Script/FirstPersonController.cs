@@ -62,10 +62,22 @@ namespace StarterAssets
         public float RespawnDelay = 1.0f;
         [Tooltip("Optional manual respawn point")]
         public Transform RespawnPoint;
-        [Tooltip("Optional weapon transform. Leave empty to auto-detect a child named like a gun")]
+        [Tooltip("Assign the weapon object that has GunScript")]
         public Transform EquippedWeapon;
-        [Tooltip("Optional health label. Leave empty to auto-create one")]
+        [Tooltip("Assign the TMP text that shows HP")]
         public TMP_Text HealthText;
+
+        [Header("Inventory")]
+        [Tooltip("How many keys the player needs to finish the level")]
+        public int KeyGoal = 3;
+
+        [Header("HUD")]
+        [Tooltip("Assign the TMP text that shows collected keys")]
+        public TMP_Text KeyText;
+        [Tooltip("Assign the TMP text used for prompts and pickup messages")]
+        public TMP_Text InteractionText;
+        [Tooltip("How long pickup notifications stay on screen")]
+        public float NotificationDuration = 1.75f;
 
         private float _cinemachineTargetPitch;
         private float _speed;
@@ -76,21 +88,27 @@ namespace StarterAssets
         private float _jumpTimeoutDelta;
         private float _fallTimeoutDelta;
         private float _damageCooldownDelta;
+        private float _notificationTimer;
 
 #if ENABLE_INPUT_SYSTEM
         private PlayerInput _playerInput;
 #endif
         private CharacterController _controller;
         private StarterAssetsInputs _input;
-        private GameObject _mainCamera;
+        private GunScript _equippedGun;
         private int _currentHealth;
+        private int _currentKeys;
         private bool _isRespawning;
         private Vector3 _spawnPosition;
         private Quaternion _spawnRotation;
+        private string _notificationMessage = string.Empty;
+        private string _interactionPromptMessage = string.Empty;
 
         private const float _threshold = 0.01f;
 
         public bool IsAlive => !_isRespawning && _currentHealth > 0;
+        public int CurrentKeys => _currentKeys;
+        public int TargetKeys => Mathf.Max(1, KeyGoal);
 
         private bool IsCurrentDeviceMouse
         {
@@ -101,14 +119,6 @@ namespace StarterAssets
 #else
                 return false;
 #endif
-            }
-        }
-
-        private void Awake()
-        {
-            if (_mainCamera == null)
-            {
-                _mainCamera = GameObject.FindGameObjectWithTag("MainCamera");
             }
         }
 
@@ -129,8 +139,10 @@ namespace StarterAssets
             _spawnRotation = transform.rotation;
 
             ValidateSetup();
+            CacheWeaponReference();
             UpdateHealthUI();
-            EnsureWeaponSetup();
+            UpdateKeyUI();
+            UpdateInteractionUI();
         }
 
         private void Update()
@@ -140,9 +152,30 @@ namespace StarterAssets
                 _damageCooldownDelta -= Time.deltaTime;
             }
 
+            if (_notificationTimer > 0f)
+            {
+                _notificationTimer -= Time.deltaTime;
+                if (_notificationTimer <= 0f)
+                {
+                    _notificationMessage = string.Empty;
+                }
+            }
+
             if (_isRespawning)
             {
+                _interactionPromptMessage = string.Empty;
+                UpdateInteractionUI();
                 return;
+            }
+
+            if (MenuController.IsGamePaused)
+            {
+                return;
+            }
+
+            if (_equippedGun == null)
+            {
+                CacheWeaponReference();
             }
 
             JumpAndGravity();
@@ -152,7 +185,7 @@ namespace StarterAssets
 
         private void LateUpdate()
         {
-            if (_isRespawning)
+            if (_isRespawning || MenuController.IsGamePaused)
             {
                 return;
             }
@@ -175,6 +208,96 @@ namespace StarterAssets
             {
                 StartCoroutine(RespawnRoutine());
             }
+        }
+
+        public int RestoreHealth(int amount)
+        {
+            if (amount <= 0 || !IsAlive || _currentHealth >= MaxHealth)
+            {
+                return 0;
+            }
+
+            int previousHealth = _currentHealth;
+            _currentHealth = Mathf.Clamp(_currentHealth + amount, 0, MaxHealth);
+            UpdateHealthUI();
+            return _currentHealth - previousHealth;
+        }
+
+        public bool TryCollectAmmo(int amount, out int collectedAmmo)
+        {
+            collectedAmmo = 0;
+            if (amount <= 0)
+            {
+                return false;
+            }
+
+            if (_equippedGun == null)
+            {
+                CacheWeaponReference();
+            }
+
+            if (_equippedGun == null)
+            {
+                return false;
+            }
+
+            collectedAmmo = _equippedGun.AddAmmo(amount);
+            return collectedAmmo > 0;
+        }
+
+        public bool TryCollectKey(int amount, out int collectedKeys)
+        {
+            collectedKeys = 0;
+            if (amount <= 0 || _currentKeys >= TargetKeys)
+            {
+                return false;
+            }
+
+            int previousKeys = _currentKeys;
+            _currentKeys = Mathf.Clamp(_currentKeys + amount, 0, TargetKeys);
+            collectedKeys = _currentKeys - previousKeys;
+
+            if (collectedKeys <= 0)
+            {
+                return false;
+            }
+
+            UpdateKeyUI();
+            return true;
+        }
+
+        public bool HasEnoughKeys(int requiredKeys)
+        {
+            return _currentKeys >= Mathf.Max(0, requiredKeys);
+        }
+
+        public void ShowPickupNotification(string notification)
+        {
+            if (string.IsNullOrWhiteSpace(notification))
+            {
+                return;
+            }
+
+            _notificationMessage = notification;
+            _notificationTimer = Mathf.Max(0.1f, NotificationDuration);
+            UpdateInteractionUI();
+        }
+
+        public void SetInteractionPrompt(string prompt)
+        {
+            _interactionPromptMessage = string.IsNullOrWhiteSpace(prompt) ? string.Empty : prompt;
+            UpdateInteractionUI();
+        }
+
+        public void ClearInteractionPrompt()
+        {
+            if (string.IsNullOrEmpty(_interactionPromptMessage))
+            {
+                return;
+            }
+
+            _interactionPromptMessage = string.Empty;
+            UpdateInteractionUI();
         }
 
         private void GroundedCheck()
@@ -298,6 +421,16 @@ namespace StarterAssets
             {
                 Debug.LogWarning($"{nameof(FirstPersonController)} on {name} has no EquippedWeapon assigned.");
             }
+
+            if (KeyText == null)
+            {
+                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} has no KeyText assigned.");
+            }
+
+            if (InteractionText == null)
+            {
+                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} has no InteractionText assigned.");
+            }
         }
 
         private void UpdateHealthUI()
@@ -310,12 +443,42 @@ namespace StarterAssets
             HealthText.text = $"HP {_currentHealth} / {MaxHealth}";
         }
 
+        private void UpdateKeyUI()
+        {
+            if (KeyText == null)
+            {
+                return;
+            }
+
+            KeyText.gameObject.SetActive(true);
+            KeyText.text = $"KEYS {_currentKeys} / {TargetKeys}";
+        }
+
+        private void UpdateInteractionUI()
+        {
+            if (InteractionText == null)
+            {
+                return;
+            }
+
+            string message = !string.IsNullOrEmpty(_interactionPromptMessage) ? _interactionPromptMessage : _notificationMessage;
+            bool hasMessage = !string.IsNullOrEmpty(message);
+
+            InteractionText.gameObject.SetActive(hasMessage);
+            if (hasMessage)
+            {
+                InteractionText.text = message;
+            }
+        }
+
         private IEnumerator RespawnRoutine()
         {
             _isRespawning = true;
             _input.move = Vector2.zero;
             _input.jump = false;
             _verticalVelocity = 0.0f;
+            _interactionPromptMessage = string.Empty;
+            UpdateInteractionUI();
 
             yield return new WaitForSeconds(RespawnDelay);
 
@@ -335,28 +498,30 @@ namespace StarterAssets
             UpdateHealthUI();
         }
 
-        private void EnsureWeaponSetup()
+        private void CacheWeaponReference()
         {
-            Camera cameraComponent = _mainCamera != null ? _mainCamera.GetComponent<Camera>() : Camera.main;
-            if (cameraComponent == null)
-            {
-                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} could not find a main camera.");
-                return;
-            }
-
             if (EquippedWeapon == null)
             {
                 return;
             }
 
-            GunScript gun = EquippedWeapon.GetComponent<GunScript>();
-            if (gun == null)
+            _equippedGun = EquippedWeapon.GetComponent<GunScript>();
+            if (_equippedGun == null)
             {
                 Debug.LogWarning($"{nameof(FirstPersonController)} on {name} needs a {nameof(GunScript)} on the assigned EquippedWeapon.");
                 return;
             }
 
-            gun.Configure(cameraComponent, transform);
+            _equippedGun.Configure(null, transform);
+        }
+
+        private bool WasInteractPressedThisFrame()
+        {
+#if ENABLE_INPUT_SYSTEM
+            return Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
+#else
+            return Input.GetKeyDown(KeyCode.E);
+#endif
         }
     }
 }

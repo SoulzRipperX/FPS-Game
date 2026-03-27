@@ -14,6 +14,7 @@ public class MenuController : MonoBehaviour
     [SerializeField] private string gameSceneName = "Main_Game";
     [SerializeField] private GameObject pausePanel;
     [SerializeField] private GameObject optionsPanel;
+    [SerializeField] private GameObject weaponRoot;
     [SerializeField] private Slider bgmSlider;
     [SerializeField] private Slider sfxSlider;
     [SerializeField] private AudioSource[] bgmSources;
@@ -33,6 +34,11 @@ public class MenuController : MonoBehaviour
         if (optionsPanel == null)
         {
             optionsPanel = GameObject.Find("Options_Canvas");
+        }
+
+        if (weaponRoot == null)
+        {
+            weaponRoot = GameObject.Find("WeaponAnchor") ?? GameObject.Find("SciFiGunLight_Black");
         }
     }
 
@@ -59,6 +65,7 @@ public class MenuController : MonoBehaviour
         if (HasGameplayInput())
         {
             HideAllMenus();
+            SetWeaponVisibility(true);
             ResumeGameplayState();
         }
         else
@@ -114,6 +121,7 @@ public class MenuController : MonoBehaviour
 
         IsGamePaused = true;
         Time.timeScale = 0f;
+        SetWeaponVisibility(false);
         PauseGameplayState();
 
         GameObject primaryPausePanel = GetPrimaryPausePanel();
@@ -138,6 +146,7 @@ public class MenuController : MonoBehaviour
         IsGamePaused = false;
         Time.timeScale = 1f;
         HideAllMenus();
+        SetWeaponVisibility(true);
         ResumeGameplayState();
     }
 
@@ -261,6 +270,14 @@ public class MenuController : MonoBehaviour
         if (optionsPanel != null)
         {
             optionsPanel.SetActive(false);
+        }
+    }
+
+    private void SetWeaponVisibility(bool isVisible)
+    {
+        if (weaponRoot != null)
+        {
+            weaponRoot.SetActive(isVisible);
         }
     }
 

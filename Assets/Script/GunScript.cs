@@ -14,6 +14,9 @@ public interface IDamageable
 [RequireComponent(typeof(AudioSource))]
 public class GunScript : MonoBehaviour
 {
+    private static Texture2D CrosshairTexture;
+    private const float AudioLoadTimeout = 1.0f;
+
     [Header("Shooting")]
     [SerializeField] private Camera ShootCamera;
     [SerializeField] private Transform MuzzlePoint;
@@ -25,6 +28,8 @@ public class GunScript : MonoBehaviour
 
     [Header("Ammo")]
     [SerializeField] private int MagazineSize = 12;
+    [SerializeField] private int StartingReserveAmmo = 24;
+    [SerializeField] private int MaxReserveAmmo = 60;
     [SerializeField] private float ReloadDuration = 1.15f;
     [SerializeField] private bool AutoReload = true;
 
@@ -35,26 +40,41 @@ public class GunScript : MonoBehaviour
     [SerializeField] private AudioClip ReloadClip;
     [SerializeField] private TMP_Text AmmoText;
 
+    [Header("Crosshair")]
+    [SerializeField] private bool ShowCrosshair = true;
+    [SerializeField] private float CrosshairSize = 8f;
+    [SerializeField] private Color CrosshairColor = new Color(1f, 0.15f, 0.15f, 0.95f);
+
     private AudioSource AudioSource;
     private Transform OwnerRoot;
-    private int CurrentAmmo;
+    private int CurrentMagazineAmmo;
+    private int CurrentReserveAmmo;
     private float NextFireTime;
     private bool IsReloading;
+    private Coroutine PendingShootSoundRoutine;
+    private Coroutine PendingReloadSoundRoutine;
 
     private void Awake()
     {
+        EnsureCrosshairTexture();
+
         AudioSource = GetComponent<AudioSource>();
         AudioSource.playOnAwake = false;
         AudioSource.spatialBlend = 0f;
         AudioSource.volume = 0.85f;
 
         OwnerRoot = transform.root;
-        CurrentAmmo = Mathf.Max(1, MagazineSize);
+        MagazineSize = Mathf.Max(1, MagazineSize);
+        MaxReserveAmmo = Mathf.Max(0, MaxReserveAmmo);
+        CurrentMagazineAmmo = MagazineSize;
+        CurrentReserveAmmo = Mathf.Clamp(StartingReserveAmmo, 0, MaxReserveAmmo);
     }
 
     private void Start()
     {
         ResolveReferences();
+        PrepareAudioClip(ShootClip);
+        PrepareAudioClip(ReloadClip);
         ValidateSetup();
         UpdateAmmoLabel();
     }
@@ -73,7 +93,7 @@ public class GunScript : MonoBehaviour
             return;
         }
 
-        if (WasReloadPressedThisFrame() && CurrentAmmo < MagazineSize)
+        if (WasReloadPressedThisFrame() && CurrentMagazineAmmo < MagazineSize && CurrentReserveAmmo > 0)
         {
             StartCoroutine(ReloadRoutine());
             return;
@@ -84,9 +104,9 @@ public class GunScript : MonoBehaviour
             return;
         }
 
-        if (CurrentAmmo <= 0)
+        if (CurrentMagazineAmmo <= 0)
         {
-            if (AutoReload)
+            if (AutoReload && CurrentReserveAmmo > 0)
             {
                 StartCoroutine(ReloadRoutine());
             }
@@ -110,6 +130,32 @@ public class GunScript : MonoBehaviour
         }
     }
 
+    private void OnGUI()
+    {
+        if (!ShowCrosshair || Event.current.type != EventType.Repaint)
+        {
+            return;
+        }
+
+        if (MenuController.IsGamePaused || IsReloading || ShootCamera == null || !ShootCamera.isActiveAndEnabled)
+        {
+            return;
+        }
+
+        float size = Mathf.Max(2f, CrosshairSize);
+        float halfSize = size * 0.5f;
+        Rect rect = new Rect(
+            (Screen.width * 0.5f) - halfSize,
+            (Screen.height * 0.5f) - halfSize,
+            size,
+            size);
+
+        Color previousColor = GUI.color;
+        GUI.color = CrosshairColor;
+        GUI.DrawTexture(rect, CrosshairTexture);
+        GUI.color = previousColor;
+    }
+
     private void ResolveReferences()
     {
     }
@@ -117,7 +163,7 @@ public class GunScript : MonoBehaviour
     private void Fire()
     {
         NextFireTime = Time.time + FireRate;
-        CurrentAmmo--;
+        CurrentMagazineAmmo--;
         UpdateAmmoLabel();
 
         PlayShootFeedback();
@@ -153,10 +199,23 @@ public class GunScript : MonoBehaviour
             break;
         }
 
-        if (CurrentAmmo <= 0 && AutoReload)
+        if (CurrentMagazineAmmo <= 0 && AutoReload && CurrentReserveAmmo > 0)
         {
             StartCoroutine(ReloadRoutine());
         }
+    }
+
+    public int AddAmmo(int amount)
+    {
+        if (amount <= 0 || CurrentReserveAmmo >= MaxReserveAmmo)
+        {
+            return 0;
+        }
+
+        int previousReserveAmmo = CurrentReserveAmmo;
+        CurrentReserveAmmo = Mathf.Clamp(CurrentReserveAmmo + amount, 0, MaxReserveAmmo);
+        UpdateAmmoLabel();
+        return CurrentReserveAmmo - previousReserveAmmo;
     }
 
     private void PlayShootFeedback()
@@ -173,8 +232,7 @@ public class GunScript : MonoBehaviour
 
         if (ShootClip != null)
         {
-            AudioSource.pitch = UnityEngine.Random.Range(0.97f, 1.03f);
-            AudioSource.PlayOneShot(ShootClip);
+            PlayClip(ShootClip, UnityEngine.Random.Range(0.97f, 1.03f), ref PendingShootSoundRoutine);
         }
     }
 
@@ -191,7 +249,10 @@ public class GunScript : MonoBehaviour
 
         yield return new WaitForSeconds(ReloadDuration);
 
-        CurrentAmmo = MagazineSize;
+        int ammoNeeded = Mathf.Max(0, MagazineSize - CurrentMagazineAmmo);
+        int ammoToLoad = Mathf.Min(ammoNeeded, CurrentReserveAmmo);
+        CurrentMagazineAmmo += ammoToLoad;
+        CurrentReserveAmmo -= ammoToLoad;
         IsReloading = false;
         UpdateAmmoLabel();
     }
@@ -238,7 +299,7 @@ public class GunScript : MonoBehaviour
             return;
         }
 
-        AmmoText.text = customText ?? $"AMMO {CurrentAmmo} / {MagazineSize}";
+        AmmoText.text = customText ?? $"AMMO {CurrentMagazineAmmo} | {CurrentReserveAmmo}";
     }
 
     private void PlayReloadFeedback()
@@ -248,8 +309,61 @@ public class GunScript : MonoBehaviour
             return;
         }
 
-        AudioSource.pitch = 1f;
-        AudioSource.PlayOneShot(ReloadClip);
+        PlayClip(ReloadClip, 1f, ref PendingReloadSoundRoutine);
+    }
+
+    private void PrepareAudioClip(AudioClip clip)
+    {
+        if (clip == null)
+        {
+            return;
+        }
+
+        if (clip.loadState == AudioDataLoadState.Unloaded)
+        {
+            clip.LoadAudioData();
+        }
+    }
+
+    private void PlayClip(AudioClip clip, float pitch, ref Coroutine pendingRoutine)
+    {
+        if (clip == null)
+        {
+            return;
+        }
+
+        PrepareAudioClip(clip);
+
+        if (clip.loadState == AudioDataLoadState.Loaded)
+        {
+            AudioSource.pitch = pitch;
+            AudioSource.PlayOneShot(clip);
+            return;
+        }
+
+        if (pendingRoutine != null)
+        {
+            StopCoroutine(pendingRoutine);
+        }
+
+        pendingRoutine = StartCoroutine(PlayClipWhenLoaded(clip, pitch));
+    }
+
+    private IEnumerator PlayClipWhenLoaded(AudioClip clip, float pitch)
+    {
+        float remainingTime = AudioLoadTimeout;
+
+        while (clip != null && clip.loadState == AudioDataLoadState.Loading && remainingTime > 0f)
+        {
+            remainingTime -= Time.unscaledDeltaTime;
+            yield return null;
+        }
+
+        if (clip != null && clip.loadState == AudioDataLoadState.Loaded)
+        {
+            AudioSource.pitch = pitch;
+            AudioSource.PlayOneShot(clip);
+        }
     }
 
     private bool WasFirePressedThisFrame()
@@ -259,6 +373,18 @@ public class GunScript : MonoBehaviour
 #else
         return Input.GetMouseButtonDown(0);
 #endif
+    }
+
+    private static void EnsureCrosshairTexture()
+    {
+        if (CrosshairTexture != null)
+        {
+            return;
+        }
+
+        CrosshairTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+        CrosshairTexture.SetPixel(0, 0, Color.white);
+        CrosshairTexture.Apply();
     }
 
     private bool WasReloadPressedThisFrame()
