@@ -79,6 +79,28 @@ namespace StarterAssets
         [Tooltip("How long pickup notifications stay on screen")]
         public float NotificationDuration = 1.75f;
 
+        [Header("Flashlight")]
+        [Tooltip("Optional Light to use as the flashlight. If left empty, one is created at runtime.")]
+        public Light FlashlightLight;
+        [Tooltip("Whether the flashlight starts enabled")]
+        public bool FlashlightStartsEnabled;
+        [Tooltip("Local position for a runtime-created flashlight")]
+        public Vector3 FlashlightLocalPosition = new Vector3(0.18f, -0.08f, 0.35f);
+        [Tooltip("Local rotation for a runtime-created flashlight")]
+        public Vector3 FlashlightLocalEulerAngles = Vector3.zero;
+        [Tooltip("Range for a runtime-created flashlight")]
+        public float FlashlightRange = 20f;
+        [Tooltip("Intensity for a runtime-created flashlight")]
+        public float FlashlightIntensity = 2.2f;
+        [Tooltip("Spot angle for a runtime-created flashlight")]
+        [Range(10f, 179f)]
+        public float FlashlightSpotAngle = 65f;
+        [Tooltip("Inner spot angle for a runtime-created flashlight")]
+        [Range(0f, 179f)]
+        public float FlashlightInnerSpotAngle = 35f;
+        [Tooltip("Tint color for a runtime-created flashlight")]
+        public Color FlashlightColor = new Color(1f, 0.956f, 0.84f, 1f);
+
         private float _cinemachineTargetPitch;
         private float _speed;
         private float _rotationVelocity;
@@ -96,9 +118,12 @@ namespace StarterAssets
         private CharacterController _controller;
         private StarterAssetsInputs _input;
         private GunScript _equippedGun;
+        private Light _flashlight;
+        private Light _runtimeFlashlight;
         private int _currentHealth;
         private int _currentKeys;
         private bool _isRespawning;
+        private bool _flashlightEnabled;
         private Vector3 _spawnPosition;
         private Quaternion _spawnRotation;
         private string _notificationMessage = string.Empty;
@@ -140,6 +165,7 @@ namespace StarterAssets
 
             ValidateSetup();
             CacheWeaponReference();
+            SetupFlashlight();
             UpdateHealthUI();
             UpdateKeyUI();
             UpdateInteractionUI();
@@ -178,6 +204,7 @@ namespace StarterAssets
                 CacheWeaponReference();
             }
 
+            HandleFlashlightToggle();
             JumpAndGravity();
             GroundedCheck();
             Move();
@@ -433,6 +460,95 @@ namespace StarterAssets
             }
         }
 
+        private void SetupFlashlight()
+        {
+            _flashlightEnabled = FlashlightStartsEnabled;
+
+            if (FlashlightLight != null)
+            {
+                _flashlight = FlashlightLight;
+                ApplyFlashlightState();
+                return;
+            }
+
+            if (_runtimeFlashlight != null)
+            {
+                _flashlight = _runtimeFlashlight;
+                ApplyFlashlightState();
+                return;
+            }
+
+            Transform flashlightParent = ResolveFlashlightParent();
+            if (flashlightParent == null)
+            {
+                return;
+            }
+
+            GameObject flashlightObject = new GameObject("RuntimeFlashlight");
+            flashlightObject.transform.SetParent(flashlightParent, false);
+            flashlightObject.transform.localPosition = FlashlightLocalPosition;
+            flashlightObject.transform.localRotation = Quaternion.Euler(FlashlightLocalEulerAngles);
+
+            _runtimeFlashlight = flashlightObject.AddComponent<Light>();
+            _runtimeFlashlight.type = LightType.Spot;
+            _runtimeFlashlight.range = Mathf.Max(1f, FlashlightRange);
+            _runtimeFlashlight.intensity = Mathf.Max(0f, FlashlightIntensity);
+            _runtimeFlashlight.spotAngle = Mathf.Clamp(FlashlightSpotAngle, 10f, 179f);
+#if UNITY_2021_2_OR_NEWER
+            _runtimeFlashlight.innerSpotAngle = Mathf.Clamp(FlashlightInnerSpotAngle, 0f, _runtimeFlashlight.spotAngle);
+#endif
+            _runtimeFlashlight.color = FlashlightColor;
+            _runtimeFlashlight.shadows = LightShadows.Soft;
+
+            _flashlight = _runtimeFlashlight;
+            ApplyFlashlightState();
+        }
+
+        private Transform ResolveFlashlightParent()
+        {
+            if (EquippedWeapon != null)
+            {
+                return EquippedWeapon.parent != null ? EquippedWeapon.parent : EquippedWeapon;
+            }
+
+            if (CinemachineCameraTarget != null)
+            {
+                return CinemachineCameraTarget.transform;
+            }
+
+            return transform;
+        }
+
+        private void HandleFlashlightToggle()
+        {
+            if (!WasFlashlightTogglePressedThisFrame())
+            {
+                return;
+            }
+
+            if (_flashlight == null)
+            {
+                SetupFlashlight();
+            }
+
+            if (_flashlight == null)
+            {
+                return;
+            }
+
+            _flashlightEnabled = !_flashlightEnabled;
+            ApplyFlashlightState();
+            ShowPickupNotification(_flashlightEnabled ? "Flashlight On" : "Flashlight Off");
+        }
+
+        private void ApplyFlashlightState()
+        {
+            if (_flashlight != null)
+            {
+                _flashlight.enabled = _flashlightEnabled;
+            }
+        }
+
         private void UpdateHealthUI()
         {
             if (HealthText == null)
@@ -521,6 +637,15 @@ namespace StarterAssets
             return Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
 #else
             return Input.GetKeyDown(KeyCode.E);
+#endif
+        }
+
+        private bool WasFlashlightTogglePressedThisFrame()
+        {
+#if ENABLE_INPUT_SYSTEM
+            return Keyboard.current != null && Keyboard.current.fKey.wasPressedThisFrame;
+#else
+            return Input.GetKeyDown(KeyCode.F);
 #endif
         }
     }
