@@ -659,7 +659,12 @@ namespace StarterAssets
             _equippedGun = EquippedWeapon.GetComponent<GunScript>();
             if (_equippedGun == null)
             {
-                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} needs a {nameof(GunScript)} on the assigned EquippedWeapon.");
+                _equippedGun = EquippedWeapon.GetComponentInChildren<GunScript>(true);
+            }
+
+            if (_equippedGun == null)
+            {
+                Debug.LogWarning($"{nameof(FirstPersonController)} on {name} needs a {nameof(GunScript)} on the assigned EquippedWeapon or one of its children.");
                 return;
             }
 
