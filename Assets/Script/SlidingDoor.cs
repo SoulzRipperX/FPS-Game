@@ -92,6 +92,12 @@ public class SlidingDoor : MonoBehaviour
             return;
         }
 
+        if (!IsTrackedPlayerStillInsideTrigger())
+        {
+            ClearTrackedPlayer();
+            return;
+        }
+
         _playerInRange.SetInteractionPrompt(GetPrompt());
 
         if (_isMoving || MenuController.IsGamePaused)
@@ -273,6 +279,22 @@ public class SlidingDoor : MonoBehaviour
         {
             Debug.LogWarning($"{nameof(SlidingDoor)} on {name} requires the interaction trigger to use Is Trigger.");
         }
+    }
+
+    private bool IsTrackedPlayerStillInsideTrigger()
+    {
+        if (_playerInRange == null || _interactionTrigger == null)
+        {
+            return false;
+        }
+
+        CharacterController playerCollider = _playerInRange.GetComponent<CharacterController>();
+        if (playerCollider == null)
+        {
+            return _interactionTrigger.bounds.Contains(_playerInRange.transform.position);
+        }
+
+        return _interactionTrigger.bounds.Intersects(playerCollider.bounds);
     }
 
     private static bool WasInteractPressedThisFrame()

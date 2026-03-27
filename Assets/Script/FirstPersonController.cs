@@ -327,6 +327,41 @@ namespace StarterAssets
             UpdateInteractionUI();
         }
 
+        public void TeleportTo(Vector3 targetPosition, float targetYaw, bool applyYawRotation = true)
+        {
+            if (_controller == null)
+            {
+                _controller = GetComponent<CharacterController>();
+            }
+
+            bool controllerWasEnabled = _controller != null && _controller.enabled;
+            if (controllerWasEnabled)
+            {
+                _controller.enabled = false;
+            }
+
+            transform.position = targetPosition;
+
+            if (applyYawRotation)
+            {
+                transform.rotation = Quaternion.Euler(0f, targetYaw, 0f);
+            }
+
+            Physics.SyncTransforms();
+
+            if (controllerWasEnabled)
+            {
+                _controller.enabled = true;
+            }
+
+            _verticalVelocity = 0f;
+            _jumpTimeoutDelta = JumpTimeout;
+            _fallTimeoutDelta = FallTimeout;
+            _input.jump = false;
+            _interactionPromptMessage = string.Empty;
+            UpdateInteractionUI();
+        }
+
         private void GroundedCheck()
         {
             Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z);

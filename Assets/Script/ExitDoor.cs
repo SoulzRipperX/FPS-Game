@@ -11,9 +11,11 @@ public class ExitDoor : MonoBehaviour
     [SerializeField] private int requiredKeys = 3;
     [SerializeField] private string sceneToLoad = "Main_Menu";
     private FirstPersonController _playerInRange;
+    private Collider _interactionTrigger;
 
     private void Awake()
     {
+        _interactionTrigger = GetComponent<Collider>();
         ValidateCollider();
     }
 
@@ -25,6 +27,12 @@ public class ExitDoor : MonoBehaviour
         }
 
         if (!_playerInRange.IsAlive)
+        {
+            ClearTrackedPlayer();
+            return;
+        }
+
+        if (!IsTrackedPlayerStillInsideTrigger())
         {
             ClearTrackedPlayer();
             return;
@@ -109,17 +117,32 @@ public class ExitDoor : MonoBehaviour
 
     private void ValidateCollider()
     {
-        Collider exitCollider = GetComponent<Collider>();
-        if (exitCollider == null)
+        if (_interactionTrigger == null)
         {
             Debug.LogWarning($"{nameof(ExitDoor)} on {name} needs a Collider set as Trigger.");
             return;
         }
 
-        if (!exitCollider.isTrigger)
+        if (!_interactionTrigger.isTrigger)
         {
             Debug.LogWarning($"{nameof(ExitDoor)} on {name} requires its Collider to use Is Trigger.");
         }
+    }
+
+    private bool IsTrackedPlayerStillInsideTrigger()
+    {
+        if (_playerInRange == null || _interactionTrigger == null)
+        {
+            return false;
+        }
+
+        CharacterController playerCollider = _playerInRange.GetComponent<CharacterController>();
+        if (playerCollider == null)
+        {
+            return _interactionTrigger.bounds.Contains(_playerInRange.transform.position);
+        }
+
+        return _interactionTrigger.bounds.Intersects(playerCollider.bounds);
     }
 
     private static bool WasInteractPressedThisFrame()
